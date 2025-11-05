@@ -216,6 +216,7 @@ GSIMap.h \
 GSLocale.h \
 GSFunctions.h \
 GSMime.h \
+GSPersistentDomain.h \
 GSTLS.h \
 GSXML.h \
 NSArray+GNUstepBase.h \

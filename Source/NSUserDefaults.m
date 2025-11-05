@@ -51,6 +51,7 @@
 #import "Foundation/NSTimer.h"
 #import "Foundation/NSValue.h"
 #import "GNUstepBase/GSLocale.h"
+#import "GNUstepBase/GSPersistentDomain.h"
 #import "GNUstepBase/NSProcessInfo+GNUstepBase.h"
 #import "GNUstepBase/NSString+GNUstepBase.h"
 
@@ -115,36 +116,6 @@ static BOOL		hasSharedDefaults = NO;
  * information.
  */
 static int		flags[GSUserDefaultMaxFlag] = { 0 };
-
-/* An instance of the GSPersistentDomain class is used to encapsulate
- * a single persistent domain (represented as a property list file in
- * the defaults directory.
- * Instances are generally created without contents, and the contents
- * are lazily loaded from disk when the domain is needed (either because
- * it is in the defaults system search list, or because the method to
- * obtain a copy of the domain contents is called).
- */
-@interface	GSPersistentDomain : NSObject
-{
-  NSString		*name;
-  NSString		*path;
-  NSUserDefaults	*owner;
-  NSMutableDictionary	*contents;
-  NSMutableSet          *added;
-  NSMutableSet          *modified;
-  NSMutableSet          *removed;
-  BOOL                  loaded;
-}
-- (NSDictionary*) contents;
-- (void) empty;
-- (id) initWithName: (NSString*)n
-	      owner: (NSUserDefaults*)o;
-- (NSString*) name;
-- (id) objectForKey: (NSString*)aKey;
-- (BOOL) setObject: (id)anObject forKey: (NSString*)aKey;
-- (BOOL) setContents: (NSDictionary*)domain;
-- (BOOL) synchronize;
-@end
 
 static NSString *
 lockPath(NSString *defaultsDatabase, BOOL verbose)
@@ -357,45 +328,6 @@ setPermissions(NSString *file)
     }
 }
 
-static BOOL
-writeDictionary(NSDictionary *dict, NSString *file)
-{
-  if ([file length] == 0)
-    {
-      NSLog(@"Defaults database filename is empty when writing");
-    }
-  else if (nil == dict)
-    {
-      NSFileManager	*mgr = [NSFileManager defaultManager];
-
-      return [mgr removeFileAtPath: file handler: nil];
-    }
-  else
-    {
-      NSData	*data;
-      NSString	*err;
-
-      err = nil;
-      data = [NSPropertyListSerialization dataFromPropertyList: dict
-	       format: NSPropertyListXMLFormat_v1_0
-	       errorDescription: &err];
-      if (data == nil)
-	{
-	  NSLog(@"Failed to serialize defaults database for writing: %@", err);
-	}
-      else if ([data writeToFile: file atomically: YES] == NO)
-	{
-	  NSLog(@"Failed to write defaults database to file: %@", file);
-	}
-      else
-	{
-	  setPermissions(file);
-	  return YES;
-	}
-    }
-  return NO;
-}
-
 /**
  * Returns the list of languages retrieved from the operating system, in
  * decreasing order of preference. Returns an empty array if the information
@@ -433,7 +365,7 @@ systemLanguages()
 	&& GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &numberOfLanguages,
 	  NULL, &length))
 	{
-	  wchar_t *oldBuffer = buffer; 
+	  wchar_t *oldBuffer = buffer;
 
 	  buffer = realloc(buffer, length * factor);
 	  if (!buffer)
@@ -517,7 +449,7 @@ systemLanguages()
 	    [names addObjectsFromArray: GSLanguagesFromLocale(locale)];
 	  }
       }
-  }	
+  }
 
   // If LANGUAGES did not yield any languages, try LC_MESSAGES
 
@@ -588,6 +520,31 @@ newLanguages(NSArray *oldNames)
 /*************************************************************************
  *** Private method definitions
  *************************************************************************/
+
+/* An instance of the GSPersistentDomain class is used to encapsulate
+ * a single persistent domain (represented as a property list file in
+ * the defaults directory.
+ * Instances are generally created without contents, and the contents
+ * are lazily loaded from disk when the domain is needed (either because
+ * it is in the defaults system search list, or because the method to
+ * obtain a copy of the domain contents is called).
+ */
+@interface GSPersistentDomain ()
+
+// Private methods
+- (NSDictionary*) contents;
+- (void) empty;
+- (id) initWithName: (NSString*)n
+	          owner: (NSUserDefaults*)o;
+- (NSString*) name;
+- (id) objectForKey: (NSString*)aKey;
+- (BOOL) setObject: (id)anObject forKey: (NSString*)aKey;
+- (BOOL) setContents: (NSDictionary*)domain;
+- (BOOL) synchronize;
+- (BOOL) writeDictionary: (NSDictionary*)dict
+                  toFile: (NSString*)file;
+@end
+
 @interface NSUserDefaults (Private)
 + (void) _createArgumentDictionary: (NSArray*)args;
 - (void) _changePersistentDomain: (NSString*)domainName;
@@ -703,7 +660,7 @@ newLanguages(NSArray *oldNames)
  */
 @implementation NSUserDefaults: NSObject
 
-/* Opt-out off automatic willChange/didChange notifications 
+/* Opt-out off automatic willChange/didChange notifications
  * as the KVO behaviour for NSUserDefaults is slightly different.
  *
  * We do not notify observers of changes that do not actually
@@ -1013,7 +970,7 @@ newLanguages(NSArray *oldNames)
     {
       return AUTORELEASE(defs);
     }
- 
+
   NS_DURING
     {
       /* Create new NSUserDefaults (NOTE: Not added to the autorelease pool!)
@@ -1763,14 +1720,14 @@ static BOOL isPlistObject(id o)
       if ([pd setObject: value forKey: defaultName])
         {
           id new;
-          
+
           /* New value must be fetched from all domains, as there might be
            * a registered default if value is nil, or the value is
            * superseded by GSPrimary or NSArgumentDomain
 	   */
           new = [self objectForKey: defaultName];
           [self _changePersistentDomain: bundleIdentifier];
-	  
+
 	  // Emit only a KVO notification when the value has actually changed
 	  if (![new isEqual: old])
 	    {
@@ -2138,7 +2095,7 @@ static BOOL isPlistObject(id o)
       [localException raise];
     }
   NS_ENDHANDLER
-  
+
   if (YES == result)
     {
       RELEASE(saved);
@@ -2765,7 +2722,7 @@ static BOOL isLocked = NO;
   NS_DURING
     {
       if (YES == isLocked)
-        {  
+        {
           [_fileLock unlock];
         }
     }
@@ -2782,8 +2739,14 @@ static BOOL isLocked = NO;
 
 @end
 
-@implementation	GSPersistentDomain
+@implementation GSPersistentDomain
 
+// Public method implementation
+- (NSPropertyListFormat)propertyListFormat {
+    return NSPropertyListXMLFormat_v1_0;
+}
+
+// Private method implementations
 - (NSDictionary*) contents
 {
   if (NO == loaded)
@@ -2931,6 +2894,47 @@ static BOOL isLocked = NO;
     }
 }
 
+- (BOOL) writeDictionary: (NSDictionary*)dict
+                  toFile: (NSString*)file
+{
+  if ([file length] == 0)
+    {
+      NSLog(@"Defaults database filename is empty when writing");
+    }
+  else if (0 == [dict count])
+    {
+      /* Remove empty defaults dictionary.
+       */
+      NSFileManager	*mgr = [NSFileManager defaultManager];
+
+      return [mgr removeFileAtPath: file handler: nil];
+    }
+  else
+    {
+      NSData	*data;
+      NSString	*err;
+
+      err = nil;
+      data = [NSPropertyListSerialization dataFromPropertyList: dict
+	       format: [self propertyListFormat]
+	       errorDescription: &err];
+      if (data == nil)
+	{
+	  NSLog(@"Failed to serialize defaults database for writing: %@", err);
+	}
+      else if ([data writeToFile: file atomically: YES] == NO)
+	{
+	  NSLog(@"Failed to write defaults database to file: %@", file);
+	}
+      else
+	{
+	  setPermissions(file);
+	  return YES;
+	}
+    }
+  return NO;
+}
+
 - (BOOL) synchronize
 {
   BOOL  isLocked = NO;
@@ -3018,18 +3022,9 @@ static BOOL isLocked = NO;
             {
               if (YES == isLocked)
                 {
-                  if (0 == [contents count])
-                    {
-                      /* Remove empty defaults dictionary.
-                       */
-                      written = writeDictionary(nil, path);
-                    }
-                  else
-                    {
-                      /* Write dictionary to file.
-                       */
-                      written = writeDictionary(contents, path);
-                    }
+                  /* Write dictionary to file.
+                   */
+                  written = [self writeDictionary: contents toFile: path];
                 }
             }
           if (YES == written)

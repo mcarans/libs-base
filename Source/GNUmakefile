@@ -130,6 +130,7 @@ GSIMap.h \
 GSFunctions.h \
 GSLocale.h \
 GSMime.h \
+GSPersistentDomain.h \
 GSTLS.h \
 GSXML.h \
 NSArray+GNUstepBase.h \
